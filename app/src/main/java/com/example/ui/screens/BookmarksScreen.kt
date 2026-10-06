@@ -1,50 +1,60 @@
 package com.example.ui.screens
 
-import androidx.compose.animation.*
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
-import com.example.R
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.compose.ui.text.style.TextOverflow
+import com.example.R
 import com.example.data.local.entity.ActorEntity
-import com.example.data.local.entity.LinkEntity
 import com.example.ui.MainViewModel
 import com.example.ui.ScreenState
 import com.example.ui.SortMode
 import com.example.ui.components.LinkCard
 import com.example.ui.components.SkeletonCard
-import com.example.ui.theme.LocalAccentColor
 import com.example.ui.theme.LocalVaultPalette
+
+private data class SortOptionItem(
+    val label: String,
+    val mode: SortMode,
+    val matches: (SortMode) -> Boolean
+)
+
+private val SORT_OPTIONS = listOf(
+    SortOptionItem("New", SortMode.CARD_NEWEST) { it == SortMode.CARD_NEWEST || it == SortMode.NEWEST },
+    SortOptionItem("Old", SortMode.CARD_OLDEST) { it == SortMode.CARD_OLDEST || it == SortMode.OLDEST },
+    SortOptionItem("Recently Added", SortMode.RECENTLY_ADDED) { it == SortMode.RECENTLY_ADDED },
+    SortOptionItem("Oldest Added", SortMode.OLDEST_ADDED) { it == SortMode.OLDEST_ADDED },
+    SortOptionItem("A - Z", SortMode.TITLE_AZ) { it == SortMode.TITLE_AZ },
+    SortOptionItem("Z - A", SortMode.TITLE_ZA) { it == SortMode.TITLE_ZA }
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -54,7 +64,6 @@ fun BookmarksScreen(
     modifier: Modifier = Modifier
 ) {
     val palette = LocalVaultPalette.current
-    val accent = LocalAccentColor.current
 
     val allLinks by viewModel.allLinks.collectAsStateWithLifecycle()
     val bookmarkedIds by viewModel.bookmarkedIds.collectAsStateWithLifecycle()
@@ -69,30 +78,25 @@ fun BookmarksScreen(
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val isInitialDataLoaded by viewModel.isInitialDataLoaded.collectAsStateWithLifecycle()
 
-    val actorsMap = remember(actors) {
-        val map = mutableMapOf<String, String>()
+    val (actorsMap, fullActorsMap) = remember(actors) {
+        val nameMap = mutableMapOf<String, String>()
+        val entityMap = mutableMapOf<String, ActorEntity>()
         actors.forEach { actor ->
-            map[actor.id] = actor.name
-            map[actor.name] = actor.name
-            map[actor.name.trim().lowercase()] = actor.name
+            val trimmedLower = actor.name.trim().lowercase()
+            nameMap[actor.id] = actor.name
+            nameMap[actor.name] = actor.name
+            nameMap[trimmedLower] = actor.name
+            entityMap[actor.id] = actor
+            entityMap[actor.name] = actor
+            entityMap[trimmedLower] = actor
             if (!actor.stashDbId.isNullOrBlank()) {
-                map[actor.stashDbId] = actor.name
+                nameMap[actor.stashDbId] = actor.name
+                entityMap[actor.stashDbId] = actor
             }
         }
-        map
+        nameMap to entityMap
     }
-    val fullActorsMap = remember(actors) {
-        val map = mutableMapOf<String, ActorEntity>()
-        actors.forEach { actor ->
-            map[actor.id] = actor
-            map[actor.name] = actor
-            map[actor.name.trim().lowercase()] = actor
-            if (!actor.stashDbId.isNullOrBlank()) {
-                map[actor.stashDbId] = actor
-            }
-        }
-        map
-    }
+
     val studiosMap = remember(studios) {
         val map = mutableMapOf<String, String>()
         studios.forEach { studio ->
@@ -118,7 +122,6 @@ fun BookmarksScreen(
         initialFirstVisibleItemScrollOffset = initialScroll.second
     )
 
-    // Continuously remember the user's exact scroll position in ViewModel
     LaunchedEffect(listState) {
         snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
             .collect { (index, offset) ->
@@ -129,7 +132,7 @@ fun BookmarksScreen(
     var previousSort by rememberSaveable { mutableStateOf(currentSort.name) }
     var previousQuery by rememberSaveable { mutableStateOf(searchQuery) }
 
-    val bookmarkedLinks = remember(allLinks, bookmarkedIds, searchQuery, currentSort) {
+    val bookmarkedLinks = remember(allLinks, bookmarkedIds, searchQuery, currentSort, actors, studios) {
         val bookmarked = allLinks.filter { bookmarkedIds.contains(it.id) }
         val searched = if (searchQuery.isNotBlank()) {
             val q = searchQuery.trim().lowercase()
@@ -169,16 +172,11 @@ fun BookmarksScreen(
     val focusRequester = remember { FocusRequester() }
     val focusManager = LocalFocusManager.current
 
-    val topBarContent = LocalTopBarContent.current
-    val currentTopBar: @Composable () -> Unit = remember(
-        isSearchExpanded,
-        searchQuery,
-        showSortMenu,
-        currentSort,
-        bookmarkedLinks.size,
-        palette
-    ) {
-        {
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        containerColor = palette.bg,
+        contentWindowInsets = WindowInsets.statusBars,
+        topBar = {
             TopAppBar(
                 modifier = Modifier.drawBehind {
                     drawLine(
@@ -187,7 +185,7 @@ fun BookmarksScreen(
                         end = Offset(size.width, size.height),
                         strokeWidth = 1.dp.toPx()
                     )
-                }, // BG-FIX
+                },
                 title = {
                     if (isSearchExpanded) {
                         LaunchedEffect(Unit) {
@@ -241,28 +239,21 @@ fun BookmarksScreen(
                     }
                 },
                 navigationIcon = {
-                    if (isSearchExpanded) {
-                        IconButton(
-                            onClick = {
+                    IconButton(
+                        onClick = {
+                            if (isSearchExpanded) {
                                 isSearchExpanded = false
                                 viewModel.searchQuery.value = ""
+                            } else {
+                                viewModel.navigateBack()
                             }
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Close Search"
-                            )
-                        }
-                    } else {
-                        IconButton(
-                            onClick = { viewModel.navigateBack() },
-                            modifier = Modifier.testTag("back_button")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back"
-                            )
-                        }
+                        },
+                        modifier = Modifier.testTag("back_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = if (isSearchExpanded) "Close Search" else "Back"
+                        )
                     }
                 },
                 actions = {
@@ -318,155 +309,42 @@ fun BookmarksScreen(
                                 expanded = showSortMenu,
                                 onDismissRequest = { showSortMenu = false },
                                 shape = RoundedCornerShape(16.dp),
-                                containerColor = palette.cardBg // BG-FIX
+                                containerColor = palette.cardBg
                             ) {
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            "New",
-                                            fontWeight = if (currentSort == SortMode.CARD_NEWEST || currentSort == SortMode.NEWEST) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (currentSort == SortMode.CARD_NEWEST || currentSort == SortMode.NEWEST) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        if (currentSort == SortMode.CARD_NEWEST || currentSort == SortMode.NEWEST) {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary
+                                SORT_OPTIONS.forEach { option ->
+                                    val isSelected = option.matches(currentSort)
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                text = option.label,
+                                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                             )
+                                        },
+                                        leadingIcon = {
+                                            if (isSelected) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Check,
+                                                    contentDescription = null,
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            viewModel.sortMode.value = option.mode
+                                            showSortMenu = false
                                         }
-                                    },
-                                    onClick = {
-                                        viewModel.sortMode.value = SortMode.CARD_NEWEST
-                                        showSortMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            "Old",
-                                            fontWeight = if (currentSort == SortMode.CARD_OLDEST || currentSort == SortMode.OLDEST) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (currentSort == SortMode.CARD_OLDEST || currentSort == SortMode.OLDEST) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        if (currentSort == SortMode.CARD_OLDEST || currentSort == SortMode.OLDEST) {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        viewModel.sortMode.value = SortMode.CARD_OLDEST
-                                        showSortMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            "Recently Added",
-                                            fontWeight = if (currentSort == SortMode.RECENTLY_ADDED) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (currentSort == SortMode.RECENTLY_ADDED) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        if (currentSort == SortMode.RECENTLY_ADDED) {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        viewModel.sortMode.value = SortMode.RECENTLY_ADDED
-                                        showSortMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            "Oldest Added",
-                                            fontWeight = if (currentSort == SortMode.OLDEST_ADDED) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (currentSort == SortMode.OLDEST_ADDED) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        if (currentSort == SortMode.OLDEST_ADDED) {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        viewModel.sortMode.value = SortMode.OLDEST_ADDED
-                                        showSortMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            "A - Z",
-                                            fontWeight = if (currentSort == SortMode.TITLE_AZ) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (currentSort == SortMode.TITLE_AZ) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        if (currentSort == SortMode.TITLE_AZ) {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        viewModel.sortMode.value = SortMode.TITLE_AZ
-                                        showSortMenu = false
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            "Z - A",
-                                            fontWeight = if (currentSort == SortMode.TITLE_ZA) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (currentSort == SortMode.TITLE_ZA) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                                        )
-                                    },
-                                    leadingIcon = {
-                                        if (currentSort == SortMode.TITLE_ZA) {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = null,
-                                                tint = MaterialTheme.colorScheme.primary
-                                            )
-                                        }
-                                    },
-                                    onClick = {
-                                        viewModel.sortMode.value = SortMode.TITLE_ZA
-                                        showSortMenu = false
-                                    }
-                                )
+                                    )
+                                }
                             }
                         }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = palette.surface // BG-FIX
+                    containerColor = palette.surface
                 )
             )
         }
-    }
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        containerColor = palette.bg, // BG-FIX
-        contentWindowInsets = WindowInsets.statusBars,
-        topBar = { currentTopBar() }
     ) { padding ->
         if (!isInitialDataLoaded) {
             LazyColumn(
@@ -507,7 +385,7 @@ fun BookmarksScreen(
                         text = "Tap the Save button on any link card to bookmark it for quick access.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        textAlign = TextAlign.Center
                     )
                 }
             }
@@ -518,48 +396,44 @@ fun BookmarksScreen(
                     .fillMaxSize()
                     .padding(top = padding.calculateTopPadding()),
                 contentPadding = PaddingValues(bottom = 16.dp),
-                verticalArrangement = Arrangement.spacedBy(0.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(bookmarkedLinks, key = { it.id }) { link ->
-                    Box(
-                        modifier = Modifier.padding(vertical = 6.dp)
-                    ) {
-                        LinkCard(
-                            link = link,
-                            actorsMap = actorsMap,
-                            studiosMap = studiosMap,
-                            fullActorsMap = fullActorsMap,
-                            isBookmarked = true,
-                            isActiveCard = activeOverlayCardId == link.id,
-                            onActivate = { activeOverlayCardId = link.id },
-                            onDismissActive = {
-                                if (activeOverlayCardId == link.id) activeOverlayCardId = null
-                            },
-                            onToggleBookmark = { viewModel.toggleBookmark(link.id) },
-                            onPlay = { url -> viewModel.playVideo(url, link.title, link.id) },
-                            onOpenGallery = {
-                                if (link.galleryUrls.isNotEmpty()) {
-                                    viewModel.openLightbox(link.galleryUrls, 0)
-                                }
-                            },
-                            onEdit = { viewModel.navigateTo(ScreenState.AddEditLink(link.id)) },
-                            onDelete = { viewModel.deleteLink(link.id) },
-                            onActorClick = { actorId -> viewModel.navigateTo(ScreenState.ActorScenes(actorId)) },
-                            onStudioClick = { studioId -> viewModel.navigateTo(ScreenState.StudioScenes(studioId)) },
-                            onImageError = { viewModel.autoRefreshSexMexCoverIfNeeded(link) },
-                            resolvingStatus = resolvingStatus,
-                            isResolvingThisCard = resolvingCardId == link.id,
-                            resolutionError = if (resolvingCardId == link.id) videoResolutionError else null,
-                            onDismissResolutionError = { viewModel.dismissVideoError() },
-                            inlinePlayback = if (activeInlineVideo?.cardId == link.id) activeInlineVideo else null,
-                            onCloseInlineVideo = { viewModel.closeInlineVideo(link.id) },
-                            onFullscreenInlineVideo = { pos -> viewModel.openFullscreenFromInline(link.id, pos, startInLandscape = true) },
-                            onFullscreenInlineVideoWithMode = { pos, startInLandscape -> viewModel.openFullscreenFromInline(link.id, pos, startInLandscape = startInLandscape) },
-                            onEnterPipInlineVideo = { pos -> viewModel.enterPipFromInline(link.id, pos) },
-                            exoPlayer = if (activeInlineVideo?.cardId == link.id) viewModel.sharedPlayerManager.getPlayer() else null,
-                            enableVideoPlayerGestures = settings.enableVideoPlayerGestures
-                        )
-                    }
+                    LinkCard(
+                        link = link,
+                        actorsMap = actorsMap,
+                        studiosMap = studiosMap,
+                        fullActorsMap = fullActorsMap,
+                        isBookmarked = true,
+                        isActiveCard = activeOverlayCardId == link.id,
+                        onActivate = { activeOverlayCardId = link.id },
+                        onDismissActive = {
+                            if (activeOverlayCardId == link.id) activeOverlayCardId = null
+                        },
+                        onToggleBookmark = { viewModel.toggleBookmark(link.id) },
+                        onPlay = { url -> viewModel.playVideo(url, link.title, link.id) },
+                        onOpenGallery = {
+                            if (link.galleryUrls.isNotEmpty()) {
+                                viewModel.openLightbox(link.galleryUrls, 0)
+                            }
+                        },
+                        onEdit = { viewModel.navigateTo(ScreenState.AddEditLink(link.id)) },
+                        onDelete = { viewModel.deleteLink(link.id) },
+                        onActorClick = { actorId -> viewModel.navigateTo(ScreenState.ActorScenes(actorId)) },
+                        onStudioClick = { studioId -> viewModel.navigateTo(ScreenState.StudioScenes(studioId)) },
+                        onImageError = { viewModel.autoRefreshSexMexCoverIfNeeded(link) },
+                        resolvingStatus = resolvingStatus,
+                        isResolvingThisCard = resolvingCardId == link.id,
+                        resolutionError = if (resolvingCardId == link.id) videoResolutionError else null,
+                        onDismissResolutionError = { viewModel.dismissVideoError() },
+                        inlinePlayback = if (activeInlineVideo?.cardId == link.id) activeInlineVideo else null,
+                        onCloseInlineVideo = { viewModel.closeInlineVideo(link.id) },
+                        onFullscreenInlineVideo = { pos -> viewModel.openFullscreenFromInline(link.id, pos, startInLandscape = true) },
+                        onFullscreenInlineVideoWithMode = { pos, startInLandscape -> viewModel.openFullscreenFromInline(link.id, pos, startInLandscape = startInLandscape) },
+                        onEnterPipInlineVideo = { pos -> viewModel.enterPipFromInline(link.id, pos) },
+                        exoPlayer = if (activeInlineVideo?.cardId == link.id) viewModel.sharedPlayerManager.getPlayer() else null,
+                        enableVideoPlayerGestures = settings.enableVideoPlayerGestures
+                    )
                 }
             }
         }
