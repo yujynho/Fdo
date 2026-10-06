@@ -10,27 +10,48 @@ import androidx.media3.common.AudioAttributes
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.database.StandaloneDatabaseProvider
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
+import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.example.network.MediaUrlValidator
+import java.io.File
 
 @OptIn(UnstableApi::class)
 object PlayerFactory {
 
     const val DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
+    @Volatile
+    private var simpleCache: SimpleCache? = null
+
+    @Synchronized
+    private fun getCache(context: Context): SimpleCache {
+        return simpleCache ?: run {
+            val cacheDir = File(context.applicationContext.cacheDir, "exoplayer_media_cache")
+            val evictor = LeastRecentlyUsedCacheEvictor(64L * 1024L * 1024L) // 64MB LRU ring cache
+            val databaseProvider = StandaloneDatabaseProvider(context.applicationContext)
+            SimpleCache(cacheDir, evictor, databaseProvider).also { simpleCache = it }
+        }
+    }
+
     fun createPlayer(context: Context): ExoPlayer {
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 /* minBufferMs = */ 15_000,
                 /* maxBufferMs = */ 60_000,
-                /* bufferForPlaybackMs = */ 1_500,
-                /* bufferForPlaybackAfterRebufferMs = */ 3_000
+                /* bufferForPlaybackMs = */ 1_000, // Faster 1.0s instant startup
+                /* bufferForPlaybackAfterRebufferMs = */ 2_500
             )
             .setPrioritizeTimeOverSizeThresholds(true)
             .build()
@@ -38,11 +59,25 @@ object PlayerFactory {
         val renderersFactory = DefaultRenderersFactory(context)
             .setEnableDecoderFallback(true)
             .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)
-            .setAllowedVideoJoiningTimeMs(5000)
+            .setAllowedVideoJoiningTimeMs(4000)
+
+        // Viewport-aware track selector for GPU and battery optimization
+        val metrics = context.resources.displayMetrics
+        val trackSelector = DefaultTrackSelector(context).apply {
+            parameters = buildUponParameters()
+                .setMaxVideoSize(
+                    metrics.widthPixels.coerceAtLeast(1920),
+                    metrics.heightPixels.coerceAtLeast(1080)
+                )
+                .setViewportSize(metrics.widthPixels, metrics.heightPixels, false)
+                .build()
+        }
 
         return ExoPlayer.Builder(context, renderersFactory)
+            .setTrackSelector(trackSelector)
             .setAudioAttributes(AudioAttributes.DEFAULT, true)
             .setLoadControl(loadControl)
+            .setSeekParameters(SeekParameters.EXACT)
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .build().apply {
@@ -57,8 +92,9 @@ object PlayerFactory {
         val httpFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(userAgent)
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15000)
-            .setReadTimeoutMs(30000)
+            .setConnectTimeoutMs(8000)
+            .setReadTimeoutMs(15000)
+            .setKeepPostFor302Redirects(true)
 
         val customHeaders = HashMap<String, String>()
         headers.forEach { (k, v) ->
@@ -68,8 +104,16 @@ object PlayerFactory {
             httpFactory.setDefaultRequestProperties(customHeaders)
         }
 
-        val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
-        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+        val upstreamFactory = DefaultDataSource.Factory(context, httpFactory)
+
+        // Wrap with CacheDataSource for instant scrubbing and bandwidth preservation
+        val cache = getCache(context)
+        val cachedDataSourceFactory: DataSource.Factory = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(upstreamFactory)
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+
+        val mediaSourceFactory = DefaultMediaSourceFactory(cachedDataSourceFactory)
         val mediaItemBuilder = MediaItem.Builder().setUri(url)
 
         val ext = MediaUrlValidator.mediaExtensionOf(url)

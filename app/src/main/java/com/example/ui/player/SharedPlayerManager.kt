@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.SeekParameters
 import com.example.ui.components.PlayerFactory
 
 class SharedPlayerManager(private val context: Context) {
@@ -17,6 +18,11 @@ class SharedPlayerManager(private val context: Context) {
         val newPlayer = PlayerFactory.createPlayer(context)
         _exoPlayer = newPlayer
         return newPlayer
+    }
+
+    @OptIn(UnstableApi::class)
+    fun setFastSeeking(isFast: Boolean) {
+        _exoPlayer?.setSeekParameters(if (isFast) SeekParameters.CLOSEST_SYNC else SeekParameters.EXACT)
     }
 
     fun stopPlayer() {
